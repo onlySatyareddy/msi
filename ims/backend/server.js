@@ -40,6 +40,16 @@ const allowedOrigins = [
   'null',  // Allow requests with no origin (e.g., from file://)
 ];
 
+// Add production frontend URL from env
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
+// Add Vercel preview deployments (optional - allows all vercel.app subdomains)
+if (process.env.CORS_ORIGIN === '*') {
+  console.log('[CORS] Allowing all origins (* mode)');
+}
+
 const corsOrigin = function (origin, callback) {
   // Allow requests with no origin (e.g., mobile apps, Postman, or curl)
   if (!origin) {
