@@ -4,7 +4,7 @@ import { enqueueSnackbar } from 'notistack';
 
 // Create axios instance
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5002/api',
+  baseURL: 'https://msi-backend-33sc.onrender.com/api',
   timeout: 30000,
   withCredentials: true
 });
