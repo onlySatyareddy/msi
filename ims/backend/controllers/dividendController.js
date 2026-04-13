@@ -133,7 +133,7 @@ exports.create = async (req, res) => {
     });
     
     await logAudit({ entityType: 'Dividend', entityId: dividend._id, action: 'CREATE', 
-      user: req.user, newData: { securityId, dividendPerShare, fiscalYear, totalDividend } });
+      user: req.user, newData: { securityId, dividendPerShare, fiscalYear, totalDividend }, req });
     
     // Notification: Dividend Declared → Checker + Admin
     await createRoleBasedNotifications({
@@ -208,7 +208,7 @@ exports.calculate = async (req, res) => {
     await dividend.save();
     
     await logAudit({ entityType: 'Dividend', entityId: dividend._id, action: 'CALCULATE',
-      user: req.user, newData: { totalDividend: calculatedTotal, distributions: distributions.length } });
+      user: req.user, newData: { totalDividend: calculatedTotal, distributions: distributions.length }, req });
     emit(req, 'dividend_update', { action: 'CALCULATED', dividend, distributions });
     
     res.json({ 

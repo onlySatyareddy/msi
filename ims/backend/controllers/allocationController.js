@@ -75,7 +75,7 @@ exports.create = async (req, res) => {
       investor: investorId, security: securityId, quantity: +quantity, 
       beforeShares, remarks, createdBy: req.user._id
     });
-    await logAudit({ entityType: 'Allocation', entityId: alloc._id, action: 'CREATE', user: req.user, newData: alloc.toJSON() });
+    await logAudit({ entityType: 'Allocation', entityId: alloc._id, action: 'CREATE', user: req.user, newData: alloc.toJSON(), req });
     
     // Notification: Allocation Done → Checker + Admin
     await createRoleBasedNotifications({
@@ -166,7 +166,7 @@ exports.approve = async (req, res) => {
     });
 
     await logAudit({ entityType: 'Allocation', entityId: alloc._id, action: 'APPROVE', user: req.user,
-      oldData: { shares: alloc.beforeShares }, newData: { shares: alloc.afterShares } });
+      oldData: { shares: alloc.beforeShares }, newData: { shares: alloc.afterShares }, req });
     
     // Notification: Allocation Approved → Maker
     if (alloc.createdBy && alloc.createdBy.toString() !== req.user._id.toString()) {
@@ -213,7 +213,7 @@ exports.reject = async (req, res) => {
 
     alloc.status = 'REJECTED'; alloc.rejectedBy = req.user._id; alloc.rejectedAt = new Date(); alloc.rejectionReason = reason;
     await alloc.save();
-    await logAudit({ entityType: 'Allocation', entityId: alloc._id, action: 'REJECT', user: req.user, newData: { reason } });
+    await logAudit({ entityType: 'Allocation', entityId: alloc._id, action: 'REJECT', user: req.user, newData: { reason }, req });
     
     // Notification: Allocation Rejected → Maker
     if (alloc.createdBy && alloc.createdBy.toString() !== req.user._id.toString()) {
@@ -271,7 +271,8 @@ exports.remove = async (req, res) => {
       action: 'DELETE',
       user: req.user,
       oldData: oldData,
-      newData: { isDeleted: true, deletedAt: alloc.deletedAt, deletedBy: req.user._id }
+      newData: { isDeleted: true, deletedAt: alloc.deletedAt, deletedBy: req.user._id },
+      req
     });
 
     // Post-delete reconciliation

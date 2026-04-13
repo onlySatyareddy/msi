@@ -12,6 +12,7 @@ const auditLogSchema = new mongoose.Schema({
   newData:     { type: mongoose.Schema.Types.Mixed, default: null },
   reason:      { type: String },
   immutableHash: { type: String, unique: true },
+  ipAddress: { type: String, default: null },
   // Validation and reconciliation fields
   issueType:   { 
     type: String, 

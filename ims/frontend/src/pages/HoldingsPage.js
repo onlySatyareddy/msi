@@ -55,42 +55,36 @@ export default function HoldingsPage() {
   const loadRef = useRef(load);
   useEffect(() => { loadRef.current = load; }, [load]);
 
-  // Listen for real-time updates from socket events
+  // Single consolidated socket listener - prevents duplicate refreshes
   useEffect(() => {
     if (!socket) return;
 
-    const handleHoldingUpdate = () => {
-      console.log('Holding updated, refreshing holdings page');
+    const handleUpdate = (eventName) => (data) => {
+      console.log(`[Socket] ${eventName} received:`, data?.action);
       loadRef.current();
     };
 
-    const handleAllocationUpdate = () => {
-      console.log('Allocation updated, refreshing holdings page');
-      loadRef.current();
+    const handlers = {
+      'holding_update': handleUpdate('holding_update'),
+      'holdings_update': handleUpdate('holdings_update'),
+      'allocation_update': handleUpdate('allocation_update'),
+      'transfer_update': handleUpdate('transfer_update'),
+      'security_update': handleUpdate('security_update'),
+      'investor_update': handleUpdate('investor_update'),
+      'dividend_update': handleUpdate('dividend_update')
     };
 
-    const handleTransferUpdate = () => {
-      console.log('Transfer updated, refreshing holdings page');
-      loadRef.current();
-    };
-
-    const handleSecurityUpdate = () => {
-      console.log('Security updated, refreshing holdings page');
-      loadRef.current();
-    };
-
-    socket.on('holding_update', handleHoldingUpdate);
-    socket.on('allocation_update', handleAllocationUpdate);
-    socket.on('transfer_update', handleTransferUpdate);
-    socket.on('security_update', handleSecurityUpdate);
+    // Register all handlers
+    Object.entries(handlers).forEach(([event, handler]) => {
+      socket.on(event, handler);
+    });
 
     return () => {
-      socket.off('holding_update', handleHoldingUpdate);
-      socket.off('allocation_update', handleAllocationUpdate);
-      socket.off('transfer_update', handleTransferUpdate);
-      socket.off('security_update', handleSecurityUpdate);
+      Object.entries(handlers).forEach(([event, handler]) => {
+        socket.off(event, handler);
+      });
     };
-  }, [socket]); // Only re-run when socket changes, not when load changes
+  }, [socket]);
 
   const openCreate = async () => {
     const [ir, sr] = await Promise.all([
@@ -176,26 +170,30 @@ export default function HoldingsPage() {
   const canApprove = ['CHECKER','ADMIN'].includes(user?.role);
   const canCreate = ['MAKER','ADMIN'].includes(user?.role);
 
-  // Listen for real-time updates from socket events
+  // Window event listeners for cross-tab updates (backup to socket)
   useEffect(() => {
-    const handleHoldingsUpdate = () => {
-      console.log('Holdings updated, refreshing holdings page');
-      load();
+    const handleWindowUpdate = (eventName) => () => {
+      console.log(`[Window] ${eventName} received, refreshing holdings`);
+      loadRef.current();
     };
 
-    const handleTransferUpdate = () => {
-      console.log('Transfer updated, refreshing holdings page');
-      load();
+    const handlers = {
+      'holdings_update': handleWindowUpdate('holdings_update'),
+      'transfer_update': handleWindowUpdate('transfer_update'),
+      'security_update': handleWindowUpdate('security_update'),
+      'investor_update': handleWindowUpdate('investor_update')
     };
 
-    window.addEventListener('holdings_update', handleHoldingsUpdate);
-    window.addEventListener('transfer_update', handleTransferUpdate);
+    Object.entries(handlers).forEach(([event, handler]) => {
+      window.addEventListener(event, handler);
+    });
 
     return () => {
-      window.removeEventListener('holdings_update', handleHoldingsUpdate);
-      window.removeEventListener('transfer_update', handleTransferUpdate);
+      Object.entries(handlers).forEach(([event, handler]) => {
+        window.removeEventListener(event, handler);
+      });
     };
-  }, [load]);
+  }, []);
 
   // Group holdings by investor
   const groupedHoldings = React.useMemo(() => {

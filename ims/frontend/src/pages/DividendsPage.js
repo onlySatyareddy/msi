@@ -15,6 +15,7 @@ import jsPDF from 'jspdf';
 import api from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
+import { getDPS, getTotalDividend, calculateDividendAmount, formatNumber, formatCurrency } from '../utils/dividendCalculations';
 
 const fmtN = (n) => n != null ? Number(n).toLocaleString('en-IN') : '—';
 
@@ -55,8 +56,38 @@ export default function DividendsPage() {
   const loadSecurities = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get('/securities');
-      setSecurities(r.data.securities || []);
+      // 🔥 Fetch both securities AND dividends separately
+      const [secRes, divRes] = await Promise.all([
+        api.get('/securities'),
+        api.get('/dividends').catch(() => ({ data: { dividends: [] } })) // Graceful fallback
+      ]);
+      
+      const securities = secRes.data.securities || [];
+      const dividends = divRes.data?.dividends || [];
+      
+      // 🔥 Merge latest dividend into each security
+      const securitiesWithDividends = securities.map(sec => {
+        // Find latest dividend for this security
+        const secDividends = dividends.filter(d => 
+          d.security?._id === sec._id || d.security === sec._id
+        );
+        const latest = secDividends.sort((a, b) => 
+          new Date(b.createdAt) - new Date(a.createdAt)
+        )[0];
+        
+        return {
+          ...sec,
+          latestDividend: latest || null
+        };
+      });
+      
+      console.log('🔍 Merged securities with dividends:', securitiesWithDividends.map(s => ({
+        company: s.companyName,
+        hasLatestDividend: !!s.latestDividend,
+        dps: s.latestDividend?.dividendPerShare || 'NONE'
+      })));
+      
+      setSecurities(securitiesWithDividends);
     } catch { enqueueSnackbar('Load failed', { variant: 'error' }); }
     finally { setLoading(false); }
   }, [enqueueSnackbar]);
@@ -78,22 +109,53 @@ export default function DividendsPage() {
 
   // Keep stable refs for socket handlers
   const loadSecuritiesRef = useRef(loadSecurities);
+  const loadAllInvestorHoldingsRef = useRef(loadAllInvestorHoldings);
   useEffect(() => { loadSecuritiesRef.current = loadSecurities; }, [loadSecurities]);
+  useEffect(() => { loadAllInvestorHoldingsRef.current = loadAllInvestorHoldings; }, [loadAllInvestorHoldings]);
 
-  // Real-time WebSocket updates
+  // Real-time WebSocket updates - Listen to ALL relevant events
   useEffect(() => {
     if (!socket) return;
 
-    const handleUpdate = (data) => {
-      if (data.action === 'CREATED' || data.action === 'UPDATED' || data.action === 'DELETED') {
-        enqueueSnackbar(`Security ${data.action.toLowerCase()}`, { variant: 'success' });
-        loadSecuritiesRef.current();
-      }
+    const handleSecurityUpdate = (data) => {
+      console.log('[Socket] Security update received:', data.action);
+      enqueueSnackbar(`Security ${data.action?.toLowerCase() || 'updated'}`, { variant: 'success' });
+      loadSecuritiesRef.current();
+      loadAllInvestorHoldingsRef.current();
     };
 
-    socket.on('security_update', handleUpdate);
-    return () => socket.off('security_update', handleUpdate);
-  }, [socket, enqueueSnackbar]); // loadSecurities not needed due to ref
+    const handleDividendUpdate = (data) => {
+      console.log('[Socket] Dividend update received:', data.action);
+      enqueueSnackbar(`Dividend ${data.action?.toLowerCase() || 'updated'}`, { variant: 'success' });
+      loadSecuritiesRef.current();
+      loadAllInvestorHoldingsRef.current();
+    };
+
+    const handleHoldingUpdate = (data) => {
+      console.log('[Socket] Holding update received:', data.action);
+      loadAllInvestorHoldingsRef.current();
+    };
+
+    const handleAllocationUpdate = (data) => {
+      console.log('[Socket] Allocation update received:', data.action);
+      loadSecuritiesRef.current();
+      loadAllInvestorHoldingsRef.current();
+    };
+
+    socket.on('security_update', handleSecurityUpdate);
+    socket.on('dividend_update', handleDividendUpdate);
+    socket.on('holding_update', handleHoldingUpdate);
+    socket.on('holdings_update', handleHoldingUpdate);
+    socket.on('allocation_update', handleAllocationUpdate);
+
+    return () => {
+      socket.off('security_update', handleSecurityUpdate);
+      socket.off('dividend_update', handleDividendUpdate);
+      socket.off('holding_update', handleHoldingUpdate);
+      socket.off('holdings_update', handleHoldingUpdate);
+      socket.off('allocation_update', handleAllocationUpdate);
+    };
+  }, [socket, enqueueSnackbar]);
 
   // Filter securities
   const filteredSecurities = securities.filter(s => {
@@ -167,6 +229,67 @@ export default function DividendsPage() {
       setFormErr(err.response?.data?.message || 'Failed to create');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 🔥 DIVIDEND DIALOG STATE & FUNCTIONS
+  const [dividendOpen, setDividendOpen] = useState(false);
+  const [selectedSecurityForDividend, setSelectedSecurityForDividend] = useState(null);
+  const [dividendPerShare, setDividendPerShare] = useState('');
+  const [dividendErr, setDividendErr] = useState('');
+  const [dividendSaving, setDividendSaving] = useState(false);
+
+  // Open dividend dialog for specific security
+  const openDividendDialog = (security) => {
+    setSelectedSecurityForDividend(security);
+    setDividendPerShare('');
+    setDividendErr('');
+    setDividendOpen(true);
+  };
+
+  // Close dividend dialog with cleanup
+  const closeDividendDialog = () => {
+    setDividendPerShare('');
+    setDividendErr('');
+    setDividendOpen(false);
+    setSelectedSecurityForDividend(null);
+  };
+
+  // Submit dividend declaration
+  const handleDividendSubmit = async () => {
+    if (!dividendPerShare || Number(dividendPerShare) <= 0) {
+      setDividendErr('Please enter a valid dividend per share amount');
+      return;
+    }
+
+    setDividendErr('');
+    setDividendSaving(true);
+
+    try {
+      const currentYear = new Date().getFullYear();
+      const fiscalYear = `FY${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+      
+      await api.post('/dividends', {
+        securityId: selectedSecurityForDividend._id,
+        dividendPerShare: Number(dividendPerShare),
+        fiscalYear: fiscalYear
+      });
+
+      enqueueSnackbar(
+        `Dividend of ₹${dividendPerShare}/share declared for ${selectedSecurityForDividend.companyName}!`,
+        { variant: 'success' }
+      );
+
+      // Clear and close
+      closeDividendDialog();
+
+      // Refresh data
+      loadSecurities();
+      loadAllInvestorHoldings();
+    } catch (err) {
+      setDividendErr(err.response?.data?.message || 'Failed to declare dividend');
+    } finally {
+      setDividendSaving(false);
     }
   };
 
@@ -429,13 +552,15 @@ export default function DividendsPage() {
                   <TableCell sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>Company</TableCell>
                   <TableCell sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>ISIN</TableCell>
                   <TableCell align="right" sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>Total Shares</TableCell>
+                  <TableCell align="right" sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>DPS (₹)</TableCell>
+                  <TableCell align="right" sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>Total Dividend (₹)</TableCell>
                   <TableCell align="center" sx={{ color: '#fff', fontWeight: 700, fontSize: { xs: 11, sm: 12 } }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
+                    <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
                       <CircularProgress size={24} />
                     </TableCell>
                   </TableRow>
@@ -456,8 +581,31 @@ export default function DividendsPage() {
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {fmtN(security.allocatedShares || security.totalShares)}
                       </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, color: '#2e7d32' }}>
+                        {(() => {
+                          const dps = getDPS(security);
+                          return dps > 0 ? `₹${dps}` : '—';
+                        })()}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, color: '#1a3c6e' }}>
+                        {(() => {
+                          const totalDividend = getTotalDividend(security);
+                          return totalDividend > 0 ? `₹${fmtN(totalDividend)}` : '—';
+                        })()}
+                      </TableCell>
                       <TableCell align="center">
                         <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                          {!isInvestor && canCreate && (
+                            <Tooltip title="Declare Dividend">
+                              <IconButton 
+                                size="small" 
+                                color="success"
+                                onClick={() => openDividendDialog(security)}
+                              >
+                                <Add fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          )}
                           <Tooltip title="Print Investor Breakdown">
                             <IconButton 
                               size="small" 
@@ -484,7 +632,7 @@ export default function DividendsPage() {
                   ))}
                 {!loading && filteredSecurities.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={4} align="center" sx={{ color: 'text.secondary', py: 4 }}>
+                    <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary', py: 4 }}>
                       <Typography>No dividend declarations found</Typography>
                     </TableCell>
                   </TableRow>
@@ -550,6 +698,8 @@ export default function DividendsPage() {
                             <TableCell sx={{ fontWeight: 700 }}>Company</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>ISIN</TableCell>
                             <TableCell align="right" sx={{ fontWeight: 700 }}>Shares Held</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 700 }}>DPS (₹)</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 700 }}>Dividend (₹)</TableCell>
                             <TableCell align="right" sx={{ fontWeight: 700 }}>% of Total</TableCell>
                           </TableRow>
                         </TableHead>
@@ -557,6 +707,9 @@ export default function DividendsPage() {
                           {invData.holdings.map((holding, hIdx) => {
                             const security = securities.find(s => s._id === holding.security?._id);
                             const percentage = totalShares > 0 ? ((holding.shares / totalShares) * 100).toFixed(2) : '0';
+                            // Use centralized DPS calculation
+                            const dps = getDPS(security);
+                            const dividend = calculateDividendAmount(holding, security);
                             return (
                               <TableRow key={hIdx} hover>
                                 <TableCell sx={{ fontWeight: 600 }}>{security?.companyName || holding.security?.companyName || '—'}</TableCell>
@@ -569,6 +722,12 @@ export default function DividendsPage() {
                                   />
                                 </TableCell>
                                 <TableCell align="right" sx={{ fontWeight: 700 }}>{fmtN(holding.shares)}</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 700, color: '#2e7d32' }}>
+                                  {dps > 0 ? `₹${dps}` : '—'}
+                                </TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 700, color: '#1a3c6e' }}>
+                                  {dividend > 0 ? `₹${fmtN(dividend)}` : '—'}
+                                </TableCell>
                                 <TableCell align="right">
                                   <Chip 
                                     label={`${percentage}%`} 
@@ -583,6 +742,16 @@ export default function DividendsPage() {
                           <TableRow sx={{ bgcolor: '#e3f2fd', fontWeight: 800 }}>
                             <TableCell colSpan={2} sx={{ fontWeight: 800, color: '#1a3c6e' }}>TOTAL</TableCell>
                             <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>{fmtN(totalShares)}</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>—</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>
+                              {(() => {
+                                const totalDividend = invData.holdings.reduce((sum, h) => {
+                                  const sec = securities.find(s => s._id === h.security?._id);
+                                  return sum + calculateDividendAmount(h, sec);
+                                }, 0);
+                                return totalDividend > 0 ? `₹${fmtN(totalDividend)}` : '—';
+                              })()}
+                            </TableCell>
                             <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>100%</TableCell>
                           </TableRow>
                         </TableBody>
@@ -647,6 +816,69 @@ export default function DividendsPage() {
         </DialogActions>
       </Dialog>
 
+      {/* 🔥 DIVIDEND DECLARATION DIALOG */}
+      <Dialog open={dividendOpen} onClose={closeDividendDialog} maxWidth="sm" fullWidth>
+        <DialogTitle fontWeight={700}>
+          Declare Dividend — {selectedSecurityForDividend?.companyName}
+        </DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          {dividendErr && <Alert severity="error" sx={{ mb: 2 }}>{dividendErr}</Alert>}
+          
+          {/* Auto-filled Info Display */}
+          <Box sx={{ mb: 3, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              <strong>ISIN:</strong> {selectedSecurityForDividend?.isin}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              <strong>Total Shares:</strong> {fmtN(selectedSecurityForDividend?.allocatedShares || selectedSecurityForDividend?.totalShares)}
+            </Typography>
+          </Box>
+
+          <TextField
+            fullWidth
+            size="small"
+            label="Fiscal Year *"
+            value={`FY${new Date().getFullYear()}-${(new Date().getFullYear() + 1).toString().slice(-2)}`}
+            disabled
+            sx={{ mb: 2 }}
+            helperText="Auto-detected current fiscal year"
+          />
+
+          <TextField
+            fullWidth
+            size="small"
+            label="Dividend Per Share (₹) *"
+            type="number"
+            value={dividendPerShare}
+            onChange={e => setDividendPerShare(e.target.value)}
+            inputProps={{ min: 0.01, step: 0.01 }}
+            helperText={dividendPerShare ? 
+              `Total Dividend Payout: ₹${fmtN((selectedSecurityForDividend?.allocatedShares || selectedSecurityForDividend?.totalShares || 0) * Number(dividendPerShare))}` : 
+              'Enter dividend amount per share'
+            }
+            sx={{ mb: 2 }}
+          />
+
+          {dividendPerShare > 0 && (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              This will distribute ₹{dividendPerShare}/share to all {fmtN(selectedSecurityForDividend?.allocatedShares || selectedSecurityForDividend?.totalShares || 0)} shares
+              (Total: ₹{fmtN((selectedSecurityForDividend?.allocatedShares || selectedSecurityForDividend?.totalShares || 0) * Number(dividendPerShare))})
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={closeDividendDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleDividendSubmit}
+            disabled={dividendSaving || !dividendPerShare || Number(dividendPerShare) <= 0}
+            sx={{ bgcolor: '#2e7d32' }}
+          >
+            {dividendSaving ? 'Declaring...' : '✅ Declare Dividend'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Print/Export Dialog */}
       <Dialog open={printOpen} onClose={() => setPrintOpen(false)} maxWidth="lg" fullWidth>
         <DialogTitle fontWeight={700}>
@@ -675,6 +907,8 @@ export default function DividendsPage() {
               <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
                 <Chip label={`ISIN: ${selectedSecurity?.isin}`} variant="outlined" />
                 <Chip label={`Total Shares: ${fmtN(selectedSecurity?.allocatedShares || selectedSecurity?.totalShares)}`} variant="outlined" color="primary" />
+                <Chip label={`DPS: ₹${selectedSecurity?.latestDividend?.dividendPerShare || selectedSecurity?.dividends?.[0]?.dividendPerShare || 0}`} variant="outlined" color="success" />
+                <Chip label={`Total Dividend: ₹${fmtN((selectedSecurity?.allocatedShares || selectedSecurity?.totalShares || 0) * (selectedSecurity?.latestDividend?.dividendPerShare || selectedSecurity?.dividends?.[0]?.dividendPerShare || 0))}`} variant="outlined" sx={{ bgcolor: '#e3f2fd', color: '#1a3c6e', fontWeight: 700 }} />
                 <Chip label={`Investors: ${investorHoldings.length}`} variant="outlined" />
               </Box>
               
@@ -685,38 +919,49 @@ export default function DividendsPage() {
                       <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Investor Name</TableCell>
                       <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Folio Number</TableCell>
                       <TableCell align="right" sx={{ color: '#fff', fontWeight: 700 }}>Shares Held</TableCell>
+                      <TableCell align="right" sx={{ color: '#fff', fontWeight: 700 }}>DPS (₹)</TableCell>
+                      <TableCell align="right" sx={{ color: '#fff', fontWeight: 700 }}>Dividend (₹)</TableCell>
                       <TableCell align="right" sx={{ color: '#fff', fontWeight: 700 }}>% Holding</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {investorHoldings.map((holding, idx) => (
-                      <TableRow key={idx} hover>
-                        <TableCell sx={{ fontWeight: 600 }}>{holding.investor?.fullName || '—'}</TableCell>
-                        <TableCell>
-                          <Chip 
-                            label={holding.investor?.folioNumber || '—'} 
-                            size="small" 
-                            variant="outlined"
-                            sx={{ fontFamily: 'monospace' }}
-                          />
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontWeight: 700 }}>{fmtN(holding.shares)}</TableCell>
-                        <TableCell align="right">
-                          <Chip 
-                            label={selectedSecurity.allocatedShares > 0 
-                              ? ((holding.shares / selectedSecurity.allocatedShares) * 100).toFixed(2) + '%'
-                              : '0%'
-                            } 
-                            size="small"
-                            color={holding.shares / (selectedSecurity.allocatedShares || 1) > 0.5 ? 'primary' : 'default'}
-                            sx={{ fontWeight: 700 }}
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {investorHoldings.map((holding, idx) => {
+                      // 🔥 Same DPS logic as main table
+                      const dps = selectedSecurity?.latestDividend?.dividendPerShare ||
+                                  selectedSecurity?.dividends?.[0]?.dividendPerShare ||
+                                  selectedSecurity?.lastDividend?.dividendPerShare || 0;
+                      const dividend = dps > 0 ? holding.shares * dps : 0;
+                      return (
+                        <TableRow key={idx} hover>
+                          <TableCell sx={{ fontWeight: 600 }}>{holding.investor?.fullName || '—'}</TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={holding.investor?.folioNumber || '—'} 
+                              size="small" 
+                              variant="outlined"
+                              sx={{ fontFamily: 'monospace' }}
+                            />
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>{fmtN(holding.shares)}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700, color: '#2e7d32' }}>{dps > 0 ? `₹${dps}` : '—'}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700, color: '#1a3c6e' }}>{dividend > 0 ? `₹${fmtN(dividend)}` : '—'}</TableCell>
+                          <TableCell align="right">
+                            <Chip 
+                              label={selectedSecurity.allocatedShares > 0 
+                                ? ((holding.shares / selectedSecurity.allocatedShares) * 100).toFixed(2) + '%'
+                                : '0%'
+                              } 
+                              size="small"
+                              color={holding.shares / (selectedSecurity.allocatedShares || 1) > 0.5 ? 'primary' : 'default'}
+                              sx={{ fontWeight: 700 }}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                     {investorHoldings.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={4} align="center" sx={{ color: 'text.secondary', py: 4 }}>
+                        <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary', py: 4 }}>
                           <Typography>No investor holdings found</Typography>
                         </TableCell>
                       </TableRow>
@@ -727,6 +972,16 @@ export default function DividendsPage() {
                         <TableCell colSpan={2} sx={{ fontWeight: 800, color: '#1a3c6e' }}>TOTAL</TableCell>
                         <TableCell align="right" sx={{ fontWeight: 800 }}>
                           {fmtN(investorHoldings.reduce((sum, h) => sum + (h.shares || 0), 0))}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>—</TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>
+                          {(() => {
+                            const totalDps = selectedSecurity?.latestDividend?.dividendPerShare ||
+                                            selectedSecurity?.dividends?.[0]?.dividendPerShare || 0;
+                            const totalShares = investorHoldings.reduce((sum, h) => sum + (h.shares || 0), 0);
+                            const totalDividend = totalDps > 0 ? totalShares * totalDps : 0;
+                            return totalDividend > 0 ? `₹${fmtN(totalDividend)}` : '—';
+                          })()}
                         </TableCell>
                         <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>100%</TableCell>
                       </TableRow>
@@ -833,22 +1088,35 @@ export default function DividendsPage() {
                               <TableCell sx={{ fontWeight: 700 }}>Company</TableCell>
                               <TableCell sx={{ fontWeight: 700 }}>ISIN</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 700 }}>Shares Held</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 700 }}>DPS (₹)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 700 }}>Dividend (₹)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 700 }}>% of Investor Total</TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
                             {invData.holdings.map((holding, hIdx) => {
-                              const security = securities.find(s => s._id === holding.securityId);
+                              // 🔥 FIX: Try both securityId formats
+                              const security = securities.find(s => 
+                                s._id === holding.securityId || 
+                                s._id === holding.security?._id
+                              );
                               const percentage = totalShares > 0 ? ((holding.shares / totalShares) * 100).toFixed(2) : '0';
+                              // 🔥 Same DPS logic
+                              const dps = security?.latestDividend?.dividendPerShare ||
+                                          security?.dividends?.[0]?.dividendPerShare ||
+                                          security?.lastDividend?.dividendPerShare || 0;
+                              const dividend = dps > 0 ? holding.shares * dps : 0;
                               return (
                                 <TableRow key={hIdx} hover>
-                                  <TableCell sx={{ fontWeight: 600 }}>{security?.companyName || '—'}</TableCell>
+                                  <TableCell sx={{ fontWeight: 600 }}>{security?.companyName || holding.security?.companyName || '—'}</TableCell>
                                   <TableCell>
                                     <Typography sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                                      {security?.isin || '—'}
+                                      {security?.isin || holding.security?.isin || '—'}
                                     </Typography>
                                   </TableCell>
                                   <TableCell align="right" sx={{ fontWeight: 700 }}>{fmtN(holding.shares)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700, color: '#2e7d32' }}>{dps > 0 ? `₹${dps}` : '—'}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700, color: '#1a3c6e' }}>{dividend > 0 ? `₹${fmtN(dividend)}` : '—'}</TableCell>
                                   <TableCell align="right">
                                     <Chip 
                                       label={`${percentage}%`} 
@@ -863,6 +1131,21 @@ export default function DividendsPage() {
                             <TableRow sx={{ bgcolor: '#e3f2fd', fontWeight: 800 }}>
                               <TableCell colSpan={2} sx={{ fontWeight: 800, color: '#1a3c6e' }}>TOTAL</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>{fmtN(totalShares)}</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>—</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>
+                                {(() => {
+                                  const totalDividend = invData.holdings.reduce((sum, h) => {
+                                    // 🔥 FIX: Same dual lookup for total
+                                    const sec = securities.find(s => 
+                                      s._id === h.securityId || 
+                                      s._id === h.security?._id
+                                    );
+                                    const d = sec?.latestDividend?.dividendPerShare || 0;
+                                    return sum + (h.shares * d);
+                                  }, 0);
+                                  return totalDividend > 0 ? `₹${fmtN(totalDividend)}` : '—';
+                                })()}
+                              </TableCell>
                               <TableCell align="right" sx={{ fontWeight: 800, color: '#1a3c6e' }}>100%</TableCell>
                             </TableRow>
                           </TableBody>

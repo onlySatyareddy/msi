@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Grid, Card, CardContent, Typography, Box, Chip, CircularProgress, Divider, Table, TableBody, TableCell, TableHead, TableRow, Paper } from '@mui/material';
 import { People, Security, SwapHoriz, AccountBalance, Lock, TrendingUp, CheckCircle, Cancel, Schedule } from '@mui/icons-material';
 import api from '../utils/api';
+import { useSocket } from '../contexts/SocketContext';
 import StatusChip from '../components/common/StatusChip';
 
 const StatCard = ({ title, value, subtitle, icon, color = '#1a3c6e', bg }) => (
@@ -22,10 +23,56 @@ const StatCard = ({ title, value, subtitle, icon, color = '#1a3c6e', bg }) => (
 export default function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { socket } = useSocket();
+
+  const loadStats = useCallback(async () => {
+    try {
+      const r = await api.get('/dashboard');
+      setStats(r.data);
+    } catch (err) {
+      console.error('Failed to load dashboard:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    api.get('/dashboard').then(r => setStats(r.data)).catch(console.error).finally(() => setLoading(false));
-  }, []);
+    loadStats();
+  }, [loadStats]);
+
+  // Keep stable ref for socket handlers
+  const loadStatsRef = useRef(loadStats);
+  useEffect(() => { loadStatsRef.current = loadStats; }, [loadStats]);
+
+  // Real-time updates for dashboard data consistency
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUpdate = (eventName) => (data) => {
+      console.log(`[Socket] ${eventName} received on dashboard:`, data?.action);
+      loadStatsRef.current();
+    };
+
+    const handlers = {
+      'security_update': handleUpdate('security_update'),
+      'investor_update': handleUpdate('investor_update'),
+      'holding_update': handleUpdate('holding_update'),
+      'holdings_update': handleUpdate('holdings_update'),
+      'transfer_update': handleUpdate('transfer_update'),
+      'dividend_update': handleUpdate('dividend_update'),
+      'allocation_update': handleUpdate('allocation_update')
+    };
+
+    Object.entries(handlers).forEach(([event, handler]) => {
+      socket.on(event, handler);
+    });
+
+    return () => {
+      Object.entries(handlers).forEach(([event, handler]) => {
+        socket.off(event, handler);
+      });
+    };
+  }, [socket]);
 
   if (loading) return <Box display="flex" justifyContent="center" mt={8}><CircularProgress /></Box>;
   if (!stats) return null;

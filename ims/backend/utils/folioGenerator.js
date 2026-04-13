@@ -1,111 +1,111 @@
-const crypto = require('crypto');
+const Counter = require('../models/Counter');
+const Investor = require('../models/Investor');
 
-// Configuration
+/**
+ * CFTECH Folio Number Configuration
+ * Format: CFTECH00000001 (14 characters)
+ * - Prefix: CFTECH (6 chars)
+ * - Numeric: 00000001 (8 digits, zero-padded)
+ */
 const FOLIO_CONFIG = {
-  PREFIX: 'FOL',
-  RANDOM_LENGTH: 7, // 6-8 chars for scalability (36^7 = 78 billion combinations)
-  INCLUDE_YEAR: true,
-  ENABLE_CHECKSUM: true,
-  MAX_RETRIES: 10,
-  CHARSET: '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ' // No I, O to avoid confusion
+  PREFIX: 'CFTECH',
+  PADDING: 8,
+  TOTAL_LENGTH: 14, // 6 + 8 = 14 characters
+  COUNTER_NAME: 'folio'
 };
 
 /**
- * Generate random alphanumeric string
+ * CFTECH folio regex pattern
+ * ^CFTECH\d{8}$
+ * - CFTECH followed by exactly 8 digits
  */
-const generateRandomString = (length) => {
-  const chars = FOLIO_CONFIG.CHARSET;
-  const bytes = crypto.randomBytes(length);
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars[bytes[i] % chars.length];
-  }
-  return result;
-};
+const FOLIO_REGEX = /^CFTECH\d{8}$/;
 
 /**
- * Calculate checksum digit using Modulo-36 algorithm
- * Provides validation to detect typos/transcription errors
+ * Generate next sequential folio number using atomic counter
+ * 
+ * Production-safe for high concurrency:
+ * - Uses findOneAndUpdate with $inc (atomic operation)
+ * - Guaranteed unique even with simultaneous requests
+ * - No race conditions possible
+ * 
+ * @returns {Promise<string>} Next folio number (e.g., "CFTECH00000042")
  */
-const calculateChecksum = (str) => {
-  // Remove dashes for checksum calculation
-  const cleanStr = str.replace(/-/g, '');
-  let sum = 0;
-  for (let i = 0; i < cleanStr.length; i++) {
-    const char = cleanStr[i];
-    const value = FOLIO_CONFIG.CHARSET.indexOf(char);
-    if (value === -1) continue;
-    sum += value * (i + 1);
-  }
-  return FOLIO_CONFIG.CHARSET[sum % 36];
-};
+const MAX_SEQUENCE = 99999999; // CFTECH99999999 max capacity
 
-/**
- * Validate folio checksum
- */
-const validateFolioChecksum = (folio) => {
-  if (!FOLIO_CONFIG.ENABLE_CHECKSUM) return true;
-  const parts = folio.split('-');
-  if (parts.length < 2) return false;
-  const base = parts.slice(0, -1).join('');
-  const checksum = parts[parts.length - 1];
-  const expectedChecksum = calculateChecksum(base);
-  return checksum === expectedChecksum;
-};
-
-/**
- * Generate industry-level folio number
- * Pattern: FOL-{RANDOM}-{YEAR}-{CHECKSUM}
- * Example: FOL-5G8H2K1-2026-X
- */
 const generateFolioNumber = async () => {
-  console.log('🔵 Starting folio generation with industry-level random algorithm...');
-  const Investor = require('../models/Investor');
-  const year = FOLIO_CONFIG.INCLUDE_YEAR ? new Date().getFullYear().toString() : '';
-
-  for (let attempt = 0; attempt < FOLIO_CONFIG.MAX_RETRIES; attempt++) {
-    const random = generateRandomString(FOLIO_CONFIG.RANDOM_LENGTH);
-    const baseParts = [FOLIO_CONFIG.PREFIX, random];
-    if (year) baseParts.push(year);
-    const base = baseParts.join('-');
-
-    let folio = base;
-    if (FOLIO_CONFIG.ENABLE_CHECKSUM) {
-      const checksum = calculateChecksum(base);
-      folio = `${base}-${checksum}`;
+  console.log('🔵 Generating sequential folio number...');
+  
+  try {
+    // 🔥 ATOMIC OPERATION: findOneAndUpdate with $inc
+    // This ensures thread-safe sequential numbering even under high concurrency
+    const counter = await Counter.findOneAndUpdate(
+      { name: FOLIO_CONFIG.COUNTER_NAME },  // Query
+      { $inc: { value: 1 } },               // Atomically increment by 1
+      { 
+        new: true,      // Return updated document
+        upsert: true    // Create if doesn't exist
+      }
+    );
+    
+    const sequence = counter.value;
+    
+    // 🔒 CAPACITY CHECK: Prevent overflow beyond 99,999,999
+    if (sequence > MAX_SEQUENCE) {
+      throw new Error(`Folio capacity exhausted. Maximum reached: ${FOLIO_CONFIG.PREFIX}${MAX_SEQUENCE}`);
     }
-
-    console.log(`🔍 Attempt ${attempt + 1}/${FOLIO_CONFIG.MAX_RETRIES}: Generated folio: ${folio}`);
-
-    // Check for collision
+    
+    // Generate folio: CFTECH + zero-padded sequence
+    // Example: sequence 42 -> "00000042" -> "CFTECH00000042"
+    const padded = String(sequence).padStart(FOLIO_CONFIG.PADDING, '0');
+    const folio = `${FOLIO_CONFIG.PREFIX}${padded}`;
+    
+    console.log(`✅ Generated folio: ${folio} (sequence: ${sequence})`);
+    
+    // � SAFETY CHECK: Verify no duplicate exists
+    // This handles edge cases like manual DB edits
     const existing = await Investor.findOne({ folioNumber: folio });
-    if (!existing) {
-      console.log(`✅ Successfully generated unique folio: ${folio}`);
-      return folio;
+    if (existing) {
+      console.error(`❌ Duplicate folio detected: ${folio}. Counter may be out of sync.`);
+      throw new Error(`Folio number ${folio} already exists. Counter synchronization issue.`);
     }
-
-    // Collision detected - retry with new random string
-    console.warn(`⚠️  Folio collision detected: ${folio}. Retrying (${attempt + 1}/${FOLIO_CONFIG.MAX_RETRIES})`);
+    
+    return folio;
+    
+  } catch (error) {
+    console.error('❌ Failed to generate folio number:', error.message);
+    throw new Error(`Folio generation failed: ${error.message}`);
   }
-
-  console.error('❌ Failed to generate unique folio after maximum retries');
-  throw new Error('Failed to generate unique folio after maximum retries. System may need configuration adjustment.');
 };
 
 /**
- * Validate folio format and checksum
+ * Validate CFTECH folio format
+ * 
+ * @param {string} folio - Folio number to validate
+ * @returns {Object} Validation result { valid: boolean, error?: string }
  */
 const validateFolioFormat = (folio) => {
-  if (!folio || typeof folio !== 'string') return { valid: false, error: 'Folio must be a string' };
-  
-  const pattern = new RegExp(`^${FOLIO_CONFIG.PREFIX}-[${FOLIO_CONFIG.CHARSET}]{${FOLIO_CONFIG.RANDOM_LENGTH}}${FOLIO_CONFIG.INCLUDE_YEAR ? '-\\d{4}' : ''}${FOLIO_CONFIG.ENABLE_CHECKSUM ? '-[' + FOLIO_CONFIG.CHARSET + ']' : ''}$`);
-  
-  if (!pattern.test(folio)) {
-    return { valid: false, error: `Invalid folio format. Expected: ${FOLIO_CONFIG.PREFIX}-XXXXXXX${FOLIO_CONFIG.INCLUDE_YEAR ? '-YYYY' : ''}${FOLIO_CONFIG.ENABLE_CHECKSUM ? '-X' : ''}` };
+  if (!folio || typeof folio !== 'string') {
+    return { 
+      valid: false, 
+      error: 'Folio must be a non-empty string' 
+    };
   }
   
-  if (FOLIO_CONFIG.ENABLE_CHECKSUM && !validateFolioChecksum(folio)) {
-    return { valid: false, error: 'Invalid folio checksum' };
+  // Check format: CFTECH00000001
+  if (!FOLIO_REGEX.test(folio)) {
+    return { 
+      valid: false, 
+      error: `Invalid folio format. Expected: ${FOLIO_CONFIG.PREFIX} followed by 8 digits (e.g., ${FOLIO_CONFIG.PREFIX}00000001). Got: ${folio}` 
+    };
+  }
+  
+  // Check total length
+  if (folio.length !== FOLIO_CONFIG.TOTAL_LENGTH) {
+    return { 
+      valid: false, 
+      error: `Folio must be exactly ${FOLIO_CONFIG.TOTAL_LENGTH} characters. Got: ${folio.length}` 
+    };
   }
   
   return { valid: true };
@@ -113,26 +113,79 @@ const validateFolioFormat = (folio) => {
 
 /**
  * Get folio statistics for monitoring
+ * 
+ * @returns {Promise<Object>} Folio statistics
  */
 const getFolioStats = async () => {
-  const Investor = require('../models/Investor');
-  const total = await Investor.countDocuments();
-  const entropy = Math.log2(Math.pow(FOLIO_CONFIG.CHARSET.length, FOLIO_CONFIG.RANDOM_LENGTH));
-
+  const counter = await Counter.findOne({ name: FOLIO_CONFIG.COUNTER_NAME });
+  const totalInvestors = await Investor.countDocuments();
+  const maxCapacity = Math.pow(10, FOLIO_CONFIG.PADDING) - 1; // 99,999,999
+  const currentSequence = counter?.value || 0;
+  const remaining = maxCapacity - currentSequence;
+  const usedPercent = ((currentSequence / maxCapacity) * 100).toFixed(2);
+  
   return {
-    totalInvestors: total,
-    possibleCombinations: Math.pow(FOLIO_CONFIG.CHARSET.length, FOLIO_CONFIG.RANDOM_LENGTH),
-    entropyBits: entropy,
-    collisionProbability: total / Math.pow(FOLIO_CONFIG.CHARSET.length, FOLIO_CONFIG.RANDOM_LENGTH),
+    totalInvestors,
+    currentSequenceNumber: currentSequence,
+    lastFolioNumber: currentSequence > 0 ? `${FOLIO_CONFIG.PREFIX}${String(currentSequence).padStart(FOLIO_CONFIG.PADDING, '0')}` : null,
+    nextFolioNumber: `${FOLIO_CONFIG.PREFIX}${String(currentSequence + 1).padStart(FOLIO_CONFIG.PADDING, '0')}`,
+    maxCapacity: `${FOLIO_CONFIG.PREFIX}${maxCapacity}`, // CFTECH99999999
+    remainingCapacity: remaining,
+    capacityUsed: `${usedPercent}%`,
+    isNearLimit: remaining < 1000, // Warning if less than 1000 remaining
     config: FOLIO_CONFIG
   };
 };
 
+/**
+ * Initialize counter (for setup/migration)
+ * Sets counter to current max sequence number
+ * 
+ * @returns {Promise<Object>} Initialized counter
+ */
+const initializeCounter = async () => {
+  console.log('🔧 Initializing folio counter...');
+  
+  // Find highest existing folio number
+  const investors = await Investor.find({ 
+    folioNumber: { $regex: `^${FOLIO_CONFIG.PREFIX}` }
+  }).sort({ folioNumber: -1 }).limit(1);
+  
+  let startValue = 0;
+  
+  if (investors.length > 0) {
+    const lastFolio = investors[0].folioNumber;
+    const match = lastFolio.match(new RegExp(`^${FOLIO_CONFIG.PREFIX}(\\d+)$`));
+    if (match) {
+      startValue = parseInt(match[1], 10);
+    }
+  }
+  
+  // Set counter to current max
+  const counter = await Counter.findOneAndUpdate(
+    { name: FOLIO_CONFIG.COUNTER_NAME },
+    { $set: { value: startValue } },
+    { upsert: true, new: true }
+  );
+  
+  console.log(`✅ Counter initialized at: ${startValue}`);
+  return counter;
+};
+
+/**
+ * Legacy validation functions (kept for backward compatibility)
+ * @deprecated Not used in CFTECH format
+ */
+const validateFolioChecksum = () => true;
+const calculateChecksum = () => '';
+
 module.exports = {
   generateFolioNumber,
   validateFolioFormat,
-  validateFolioChecksum,
-  calculateChecksum,
+  validateFolioChecksum,  // Kept for backward compatibility
+  calculateChecksum,      // Kept for backward compatibility
   getFolioStats,
-  FOLIO_CONFIG
+  initializeCounter,
+  FOLIO_CONFIG,
+  FOLIO_REGEX
 };

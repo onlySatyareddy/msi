@@ -287,7 +287,7 @@ exports.create = async (req, res) => {
       }]
     });
 
-    await logAudit({ entityType: 'Holding', entityId: holding._id, action: 'CREATE', user: req.user, newData: holding.toJSON() });
+    await logAudit({ entityType: 'Holding', entityId: holding._id, action: 'CREATE', user: req.user, newData: holding.toJSON(), req });
 
     // Notification: Holding Created → Checker + Admin
     await createRoleBasedNotifications({
@@ -331,7 +331,7 @@ exports.approve = async (req, res) => {
     await holding.save();
 
     await logAudit({ entityType: 'Holding', entityId: holding._id, action: 'APPROVE', user: req.user,
-      oldData: { status: 'PENDING' }, newData: { status: 'APPROVED' } });
+      oldData: { status: 'PENDING' }, newData: { status: 'APPROVED' }, req });
 
     // Notification: Holding Approved → Maker
     if (holding.createdBy && holding.createdBy.toString() !== req.user._id.toString()) {
@@ -383,7 +383,7 @@ exports.reject = async (req, res) => {
     });
     await holding.save();
 
-    await logAudit({ entityType: 'Holding', entityId: holding._id, action: 'REJECT', user: req.user, newData: { reason } });
+    await logAudit({ entityType: 'Holding', entityId: holding._id, action: 'REJECT', user: req.user, newData: { reason }, req });
 
     // Notification: Holding Rejected → Maker
     if (holding.createdBy && holding.createdBy.toString() !== req.user._id.toString()) {
@@ -441,7 +441,8 @@ exports.remove = async (req, res) => {
       action: 'DELETE',
       user: req.user,
       oldData: oldData,
-      newData: { isDeleted: true, deletedAt: holding.deletedAt, deletedBy: req.user._id }
+      newData: { isDeleted: true, deletedAt: holding.deletedAt, deletedBy: req.user._id },
+      req
     });
 
     // Post-delete reconciliation

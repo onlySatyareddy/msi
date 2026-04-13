@@ -83,7 +83,7 @@ exports.initiate = async (req, res) => {
     });
 
     await logAudit({ entityType: 'Transfer', entityId: transfer._id, action: 'INITIATE',
-      user: req.user, newData: { quantity, beforeFromShares, beforeToShares } });
+      user: req.user, newData: { quantity, beforeFromShares, beforeToShares }, req });
     emit(req, 'transfer_update', { action: 'INITIATED', transfer });
     
     // Notification: Share Transfer → Checker + Admin
@@ -214,7 +214,7 @@ exports.approve = async (req, res) => {
       // Step 5: Audit log
       await logAudit({ entityType: 'Transfer', entityId: transfer._id, action: 'APPROVE',
         user: req.user, oldData: { beforeFrom: transfer.beforeFromShares, beforeTo: transfer.beforeToShares },
-        newData: { afterFrom: fromHolding.shares, afterTo: toHolding.shares } });
+        newData: { afterFrom: fromHolding.shares, afterTo: toHolding.shares }, req });
 
       // Step 6: Real-time socket events
       emit(req, 'transfer_update', { action: 'EXECUTED', transfer });
@@ -298,7 +298,7 @@ exports.reject = async (req, res) => {
     await transfer.save();
 
     await logAudit({ entityType: 'Transfer', entityId: transfer._id, action: 'REJECT',
-      user: req.user, newData: { reason } });
+      user: req.user, newData: { reason }, req });
     emit(req, 'transfer_update', { action: 'REJECTED', transfer });
     emit(req, 'holdings_update', { action: 'UNLOCKED', investorId: transfer.fromInvestor._id, security: transfer.security._id });
     emit(req, 'investor_update', { action: 'SHARES_UPDATED', investorId: transfer.fromInvestor._id });
@@ -342,7 +342,8 @@ exports.remove = async (req, res) => {
       action: 'DELETE',
       user: req.user,
       oldData: oldData,
-      newData: { isDeleted: true, deletedAt: transfer.deletedAt, deletedBy: req.user._id }
+      newData: { isDeleted: true, deletedAt: transfer.deletedAt, deletedBy: req.user._id },
+      req
     });
 
     // Post-delete reconciliation

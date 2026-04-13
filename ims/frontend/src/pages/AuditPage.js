@@ -21,6 +21,7 @@ function AuditRow({ log }) {
         <TableCell><Chip label={log.action} size="small" color={ACTION_COLORS[log.action] || 'default'} /></TableCell>
         <TableCell><Typography fontSize={13} fontWeight={600}>{log.userId?.name || log.userName || '—'}</Typography></TableCell>
         <TableCell><Chip label={log.role || '—'} size="small" /></TableCell>
+        <TableCell sx={{ fontSize: 12, fontFamily: 'monospace', color: log.ipAddress ? 'inherit' : 'text.secondary', fontStyle: log.ipAddress ? 'inherit' : 'italic' }}>{log.ipAddress || '—'}</TableCell>
         <TableCell sx={{ fontSize: 12, color: log.reason ? 'inherit' : 'text.secondary', fontStyle: log.reason ? 'inherit' : 'italic' }}>{log.reason || 'No reason'}</TableCell>
         <TableCell>
           {(log.oldData || log.newData) ? (
@@ -34,7 +35,7 @@ function AuditRow({ log }) {
       </TableRow>
       {expanded && (
         <TableRow>
-          <TableCell colSpan={7} sx={{ py:0 }}>
+          <TableCell colSpan={8} sx={{ py:0 }}>
             <Collapse in={expanded}>
               <Box sx={{ p:2, bgcolor:'#f8f9fa', borderRadius:1, my:1 }}>
                 <Grid container spacing={2}>
@@ -137,8 +138,8 @@ export default function AuditPage() {
 
     if (dataToExport.length === 0) return;
 
-    const headers = tab === 0 
-      ? ['Timestamp', 'Entity Type', 'Action', 'Performed By', 'Role', 'Reason', 'Old Data', 'New Data']
+    const headers = tab === 0
+      ? ['Timestamp', 'Entity Type', 'Action', 'Performed By', 'Role', 'IP Address', 'Reason', 'Old Data', 'New Data']
       : ['Timestamp', 'Entity Type', 'Old Status', 'New Status', 'Changed By', 'Role', 'Reason'];
 
     const rows = dataToExport.map(item => {
@@ -149,6 +150,7 @@ export default function AuditPage() {
           item.action,
           item.userId?.name || item.userName || '—',
           item.role || '—',
+          item.ipAddress || '—',
           item.reason || '—',
           item.oldData ? JSON.stringify(item.oldData) : '—',
           item.newData ? JSON.stringify(item.newData) : '—'
@@ -339,14 +341,15 @@ export default function AuditPage() {
                     <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>Action</TableCell>
                     <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>Performed By</TableCell>
                     <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>Role</TableCell>
+                    <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>IP Address</TableCell>
                     <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>Reason</TableCell>
                     <TableCell sx={{ fontSize: { xs: 11, sm: 12 } }}>Details</TableCell>
                   </TableRow>
                 </TableHead>
               <TableBody>
-                {loading && <TableRow><TableCell colSpan={7} align="center"><CircularProgress size={24} /></TableCell></TableRow>}
+                {loading && <TableRow><TableCell colSpan={8} align="center"><CircularProgress size={24} /></TableCell></TableRow>}
                 {!loading && logs.filter(log => !userFilter || (log.userId?.name || log.userName || '').toLowerCase().includes(userFilter.toLowerCase())).map(log => <AuditRow key={log._id} log={log} />)}
-                {!loading && logs.filter(log => !userFilter || (log.userId?.name || log.userName || '').toLowerCase().includes(userFilter.toLowerCase())).length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ color:'text.secondary', py:3 }}>No logs</TableCell></TableRow>}
+                {!loading && logs.filter(log => !userFilter || (log.userId?.name || log.userName || '').toLowerCase().includes(userFilter.toLowerCase())).length === 0 && <TableRow><TableCell colSpan={8} align="center" sx={{ color:'text.secondary', py:3 }}>No logs</TableCell></TableRow>}
               </TableBody>
             </Table>
             </TableContainer>
@@ -575,6 +578,7 @@ export default function AuditPage() {
                         <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Action</TableCell>
                         <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Performed By</TableCell>
                         <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Role</TableCell>
+                        <TableCell sx={{ color: '#fff', fontWeight: 700 }}>IP Address</TableCell>
                         <TableCell sx={{ color: '#fff', fontWeight: 700 }}>Reason</TableCell>
                       </>
                     ) : (
@@ -600,6 +604,7 @@ export default function AuditPage() {
                       <TableCell>{log.action}</TableCell>
                       <TableCell>{log.userId?.name || log.userName || '—'}</TableCell>
                       <TableCell>{log.role || '—'}</TableCell>
+                      <TableCell sx={{ fontSize: 10, fontFamily: 'monospace' }}>{log.ipAddress || '—'}</TableCell>
                       <TableCell sx={{ fontSize: 10 }}>{log.reason || '—'}</TableCell>
                     </TableRow>
                   ))}

@@ -20,7 +20,7 @@ const KYC_DOCS = [
   { key: 'bank',    label: 'Bank Passbook' },
   { key: 'photo',   label: 'Photograph' },
 ];
-const API_BASE = process.env.REACT_APP_API_URL?.replace('/api', '') || 'http://localhost:5001';
+const API_BASE = process.env.REACT_APP_API_URL?.replace('/api', '') || 'http://localhost:5002';
 
 export default function InvestorDetailPage() {
   const { id } = useParams();
@@ -945,13 +945,17 @@ const getIfscGuide = (value) => {
             <Typography variant="subtitle1" fontWeight={700} mb={2}>KYC Documents</Typography>
             <Grid container spacing={2}>
               {KYC_DOCS.map(doc => {
-                const docData = investor.kycDocuments?.[doc.key];
+                // Robust document detection - must have url AND filename
+                const rawDoc = investor.kycDocuments?.[doc.key];
+                const docData = rawDoc?.url && rawDoc?.filename ? rawDoc : null;
+                const isCorrupted = rawDoc && !docData; // Has object but missing url/filename
+                
                 return (
                   <Grid item xs={12} sm={6} key={doc.key}>
                     <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
                       <Box sx={{ display:'flex', justifyContent:'space-between', alignItems:'center', mb: 1 }}>
                         <Typography fontWeight={600} fontSize={14}>{doc.label}</Typography>
-                        <StatusChip status={docData ? 'UPLOADED' : 'NOT_STARTED'} />
+                        <StatusChip status={docData ? 'UPLOADED' : isCorrupted ? 'ERROR' : 'NOT_STARTED'} />
                       </Box>
                       {docData ? (
                         <Box>
@@ -959,9 +963,37 @@ const getIfscGuide = (value) => {
                           <Typography fontSize={12} color="text.secondary">
                             Uploaded: {new Date(docData.uploadedAt).toLocaleDateString()}
                           </Typography>
-                          <Button size="small" href={`${API_BASE}${docData.url}`} target="_blank" sx={{ mt: 1 }}>
+                          <Button 
+                            size="small" 
+                            onClick={() => {
+                              const fullUrl = `${API_BASE}${docData.url}`;
+                              console.log('[KYC VIEW] Opening document:', { docType: doc.key, url: fullUrl, docData });
+                              // Check if file exists before opening
+                              fetch(fullUrl, { method: 'HEAD' })
+                                .then(response => {
+                                  if (response.ok) {
+                                    window.open(fullUrl, '_blank');
+                                  } else {
+                                    enqueueSnackbar('Document file not found on server. Please re-upload.', { variant: 'error' });
+                                    console.error('[KYC VIEW] File not found:', fullUrl, response.status);
+                                  }
+                                })
+                                .catch(err => {
+                                  enqueueSnackbar('Error checking document. Please try again.', { variant: 'error' });
+                                  console.error('[KYC VIEW] Error checking file:', err);
+                                });
+                            }}
+                            sx={{ mt: 1 }}
+                          >
                             View Document
                           </Button>
+                        </Box>
+                      ) : isCorrupted ? (
+                        <Box>
+                          <Typography fontSize={12} color="error">Document reference corrupted</Typography>
+                          <Typography fontSize={11} color="text.secondary">
+                            Database has record but file info is incomplete
+                          </Typography>
                         </Box>
                       ) : (
                         <Typography fontSize={12} color="text.secondary">Not uploaded</Typography>

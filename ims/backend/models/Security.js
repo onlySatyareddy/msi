@@ -15,7 +15,21 @@ const securitySchema = new mongoose.Schema({
   rejectedAt:      { type: Date },
   isDeleted:       { type: Boolean, default: false },
   deletedAt:       { type: Date },
-  deletedBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  deletedBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  pendingEdit:     {
+    companyName:   { type: String, trim: true },
+    isin:          { type: String, uppercase: true, trim: true },
+    totalShares:   { type: Number, min: 1 },
+    remarks:       { type: String }
+  },
+  editStatus:      { type: String, enum: ['NONE', 'PENDING'], default: 'NONE' },
+  editRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  editRequestedAt: { type: Date },
+  editApprovedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  editApprovedAt:  { type: Date },
+  editRejectedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  editRejectedAt:  { type: Date },
+  editRejectionReason: { type: String }
 }, { timestamps: true });
 
 securitySchema.virtual('availableShares').get(function() {
@@ -23,5 +37,6 @@ securitySchema.virtual('availableShares').get(function() {
 });
 securitySchema.set('toJSON', { virtuals: true });
 securitySchema.index({ status: 1 });
+securitySchema.index({ editStatus: 1 });
 
 module.exports = mongoose.model('Security', securitySchema);

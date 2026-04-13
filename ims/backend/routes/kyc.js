@@ -5,11 +5,15 @@ const { protect, authorize } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 
 router.use(protect);
+router.get('/diagnostic', authorize('ADMIN'), c.getDiagnostic);
 router.get('/', authorize('CHECKER','ADMIN'), c.getAllDossiers);
 router.get('/:investorId', c.getDossier);
 router.post('/:investorId/upload/:docType',
   authorize('MAKER','ADMIN'),
   (req, res, next) => { req.params.investorId = req.params.investorId; next(); },
   upload.single('file'), c.uploadDoc);
+router.post('/:investorId/cleanup',
+  authorize('ADMIN'),
+  c.cleanupOrphanedDocs);
 
 module.exports = router;

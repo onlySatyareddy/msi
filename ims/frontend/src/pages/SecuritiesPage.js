@@ -6,11 +6,12 @@ import {
   Grid, Alert, MenuItem, LinearProgress, TableContainer, useMediaQuery, useTheme,
   Switch, FormControlLabel
 } from '@mui/material';
-import { Add, CheckCircle, Cancel, Refresh, Visibility, AssignmentTurnedIn, Delete } from '@mui/icons-material';
+import { Add, CheckCircle, Cancel, Refresh, Visibility, AssignmentTurnedIn, Delete, Edit } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useSnackbar } from 'notistack';
 import api from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useSocket } from '../contexts/SocketContext';
 import StatusChip from '../components/common/StatusChip';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 
@@ -18,6 +19,7 @@ export default function SecuritiesPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
+  const { socket } = useSocket();
   const [securities, setSecurities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -29,6 +31,11 @@ export default function SecuritiesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editData, setEditData] = useState(null);
+  const [editForm, setEditForm] = useState({ isin:'', companyName:'', totalShares:'', remarks:'' });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editFormErr, setEditFormErr] = useState('');
   const theme = useTheme();
   const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
 
@@ -41,33 +48,61 @@ export default function SecuritiesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Listen for real-time updates from socket events
+  // Keep stable ref for socket handlers
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+
+  // Socket.io listeners for real-time updates
   useEffect(() => {
-    const handleSecurityUpdate = () => {
-      console.log('Security updated, refreshing securities page');
-      load();
+    if (!socket) return;
+
+    const handleUpdate = (eventName) => (data) => {
+      console.log(`[Socket] ${eventName} received on securities:`, data?.action);
+      loadRef.current();
     };
 
-    const handleAllocationUpdate = () => {
-      console.log('Allocation updated, refreshing securities page');
-      load();
+    const handlers = {
+      'security_update': handleUpdate('security_update'),
+      'allocation_update': handleUpdate('allocation_update'),
+      'holding_update': handleUpdate('holding_update'),
+      'holdings_update': handleUpdate('holdings_update'),
+      'dividend_update': handleUpdate('dividend_update')
     };
 
-    const handleHoldingUpdate = () => {
-      console.log('Holding updated, refreshing securities page');
-      load();
-    };
-
-    window.addEventListener('security_update', handleSecurityUpdate);
-    window.addEventListener('allocation_update', handleAllocationUpdate);
-    window.addEventListener('holding_update', handleHoldingUpdate);
+    Object.entries(handlers).forEach(([event, handler]) => {
+      socket.on(event, handler);
+    });
 
     return () => {
-      window.removeEventListener('security_update', handleSecurityUpdate);
-      window.removeEventListener('allocation_update', handleAllocationUpdate);
-      window.removeEventListener('holding_update', handleHoldingUpdate);
+      Object.entries(handlers).forEach(([event, handler]) => {
+        socket.off(event, handler);
+      });
     };
-  }, [load]);
+  }, [socket]);
+
+  // Window event listeners as backup (for cross-tab communication)
+  useEffect(() => {
+    const handleUpdate = (eventName) => () => {
+      console.log(`[Window] ${eventName} received, refreshing securities`);
+      loadRef.current();
+    };
+
+    const handlers = {
+      'security_update': handleUpdate('security_update'),
+      'allocation_update': handleUpdate('allocation_update'),
+      'holding_update': handleUpdate('holding_update')
+    };
+
+    Object.entries(handlers).forEach(([event, handler]) => {
+      window.addEventListener(event, handler);
+    });
+
+    return () => {
+      Object.entries(handlers).forEach(([event, handler]) => {
+        window.removeEventListener(event, handler);
+      });
+    };
+  }, []);
 
   const handleCreate = async () => {
     setFormErr(''); setSaving(true);
@@ -115,8 +150,30 @@ export default function SecuritiesPage() {
     }
   };
 
+  const handleEdit = async () => {
+    if (!editData || editSaving) return;
+    setEditFormErr('');
+    setEditSaving(true);
+    try {
+      const response = await api.put(`/securities/${editData._id}`, {
+        ...editForm,
+        totalShares: +editForm.totalShares
+      });
+      enqueueSnackbar(response.data?.message || 'Security updated', { variant:'success' });
+      setEditOpen(false);
+      setEditData(null);
+      setEditForm({ isin:'', companyName:'', totalShares:'', remarks:'' });
+      load();
+    } catch(err) {
+      setEditFormErr(err.response?.data?.message || 'Failed to update');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const isMaker = user?.role === 'MAKER';
   const canApprove = ['CHECKER','ADMIN'].includes(user?.role);
+  const canEdit = ['MAKER','ADMIN'].includes(user?.role);
 
   return (
     <Box>
@@ -170,6 +227,29 @@ export default function SecuritiesPage() {
                     <TableCell><StatusChip status={s.status} /></TableCell>
                     <TableCell><Typography fontSize={{ xs:11, sm:12 }}>{s.createdBy?.name}</Typography></TableCell>
                     <TableCell align="center">
+                      {canEdit && !s.isDeleted && s.status === 'APPROVED' && (
+                        <Tooltip title="Edit Company">
+                          <span>
+                            <IconButton
+                              size="small"
+                              color="primary"
+                              onClick={() => {
+                                setEditData(s);
+                                setEditForm({
+                                  isin: s.isin || '',
+                                  companyName: s.companyName || '',
+                                  totalShares: s.totalShares || '',
+                                  remarks: s.remarks || ''
+                                });
+                                setEditOpen(true);
+                              }}
+                              disabled={s.editStatus === 'PENDING'}
+                            >
+                              <Edit fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                      )}
                       {!s.isDeleted && user?.role === 'ADMIN' && ['PENDING','REJECTED'].includes(s.status) && (
                         <Tooltip title="Delete">
                           <IconButton size="small" color="error" disabled={deleteLoading}
@@ -274,6 +354,25 @@ export default function SecuritiesPage() {
           </DialogActions>
         </Dialog>
       )}
+
+      <Dialog open={editOpen} onClose={() => { setEditOpen(false); setEditData(null); }} maxWidth="sm" fullWidth fullScreen={fullScreenDialog}>
+        <DialogTitle fontWeight={700}>Edit Security</DialogTitle>
+        <DialogContent sx={{ pt:2 }}>
+          {editFormErr && <Alert severity="error" sx={{ mb:2 }}>{editFormErr}</Alert>}
+          <Grid container spacing={2}>
+            <Grid item xs={6}><TextField fullWidth size="small" label="ISIN *" value={editForm.isin} onChange={e => setEditForm(v=>({...v,isin:e.target.value.toUpperCase()}))} placeholder="INE000A01011" inputProps={{ maxLength:12 }} /></Grid>
+            <Grid item xs={6}><TextField fullWidth size="small" label="Total Shares *" type="number" value={editForm.totalShares} onChange={e => setEditForm(v=>({...v,totalShares:e.target.value}))} /></Grid>
+            <Grid item xs={12}><TextField fullWidth size="small" label="Company Name *" value={editForm.companyName} onChange={e => setEditForm(v=>({...v,companyName:e.target.value}))} /></Grid>
+            <Grid item xs={12}><TextField fullWidth size="small" label="Remarks" value={editForm.remarks} onChange={e => setEditForm(v=>({...v,remarks:e.target.value}))} multiline rows={2} /></Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ px:3, pb:2 }}>
+          <Button onClick={() => { setEditOpen(false); setEditData(null); }}>Cancel</Button>
+          <Button variant="contained" onClick={handleEdit} disabled={editSaving} sx={{ bgcolor:'#1a3c6e' }}>
+            {editSaving ? 'Saving...' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

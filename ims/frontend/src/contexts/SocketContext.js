@@ -29,13 +29,14 @@ export const SocketProvider = ({ children }) => {
 
     const newSocket = io(socketUrl, {
       auth: { token },
-      transports: ['websocket', 'polling'], // Fallback to polling if websocket fails
+      transports: ['polling', 'websocket'], // Start with polling for better compatibility
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       randomizationFactor: 0.5,
-      timeout: 20000
+      timeout: 20000,
+      forceNew: true // Force new connection to avoid stale states
     });
 
     newSocket.on('connect', () => {
@@ -51,6 +52,9 @@ export const SocketProvider = ({ children }) => {
     newSocket.on('connect_error', (error) => {
       console.error('[SOCKET] Connection error:', error.message);
       setConnected(false);
+      
+      // Log transport type being used for debugging
+      console.log('[SOCKET] Current transport:', newSocket.io?.engine?.transport?.name || 'unknown');
       
       // If authentication error, clear token and redirect
       if (error.message === 'Authentication error') {
@@ -104,6 +108,12 @@ export const SocketProvider = ({ children }) => {
     newSocket.on('allocation_update', (data) => {
       console.log('Allocation update received:', data);
       window.dispatchEvent(new CustomEvent('allocation_update', { detail: data }));
+    });
+
+    // Listen for dividend updates
+    newSocket.on('dividend_update', (data) => {
+      console.log('Dividend update received:', data);
+      window.dispatchEvent(new CustomEvent('dividend_update', { detail: data }));
     });
 
     setSocket(newSocket);

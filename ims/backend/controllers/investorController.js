@@ -77,7 +77,6 @@ exports.getAll = async (req, res) => {
     const { status, search, page = 1, limit = 20 } = req.query;
     const query = {};
     if (status) query.status = status;
-    if (req.user.role === 'MAKER') query.createdBy = req.user._id;
     if (search) {
       query.$or = [
         { fullName: { $regex: search, $options: 'i' } },
@@ -125,8 +124,6 @@ exports.getOne = async (req, res) => {
       .populate('rejectedBy', 'name email role')
       .populate('submittedBy', 'name email role');
     if (!investor) return res.status(404).json({ message: 'Investor not found' });
-    if (req.user.role === 'MAKER' && investor.createdBy._id.toString() !== req.user._id.toString())
-      return res.status(403).json({ message: 'Access denied' });
 
     // Calculate shares from holdings (only APPROVED holdings)
     const holdings = await Holding.find({ investor: investor._id, status: 'APPROVED' });
@@ -268,7 +265,7 @@ exports.create = async (req, res) => {
       oldStatus: null, newStatus: 'DRAFT', user: req.user });
 
     await logAudit({ entityType: 'Investor', entityId: investor._id, action: 'CREATE',
-      user: req.user, newData: investor.toJSON() });
+      user: req.user, newData: investor.toJSON(), req });
 
     // Notification: Investor Created → Checker + Admin
     await createRoleBasedNotifications({
@@ -315,7 +312,7 @@ exports.update = async (req, res) => {
     await investor.save();
 
     await logAudit({ entityType: 'Investor', entityId: investor._id, action: 'EDIT',
-      user: req.user, oldData, newData: investor.toJSON() });
+      user: req.user, oldData, newData: investor.toJSON(), req });
 
     emit(req, 'investor_update', { action: 'UPDATED', investor });
     res.json({ message: 'Investor updated', investor });
@@ -353,7 +350,7 @@ exports.submit = async (req, res) => {
     await logStatusChange({ entityType: 'Investor', entityId: investor._id,
       oldStatus, newStatus: 'UNDER_REVIEW', user: req.user });
     await logAudit({ entityType: 'Investor', entityId: investor._id, action: 'SUBMIT',
-      user: req.user, newData: { status: 'UNDER_REVIEW' } });
+      user: req.user, newData: { status: 'UNDER_REVIEW' }, req });
 
     emit(req, 'investor_update', { action: 'SUBMITTED', investor });
     res.json({ message: 'Investor submitted for review', investor });
@@ -390,7 +387,7 @@ exports.approve = async (req, res) => {
     await logStatusChange({ entityType: 'Investor', entityId: investor._id,
       oldStatus, newStatus: 'APPROVED', user: req.user });
     await logAudit({ entityType: 'Investor', entityId: investor._id, action: 'APPROVE',
-      user: req.user, newData: { status: 'APPROVED', approvedBy: req.user.fullName || req.user.email } });
+      user: req.user, newData: { status: 'APPROVED', approvedBy: req.user.fullName || req.user.email }, req });
 
     // Notification: KYC Approved → Maker + Admin
     await createRoleBasedNotifications({
@@ -445,7 +442,7 @@ exports.reject = async (req, res) => {
     await logStatusChange({ entityType: 'Investor', entityId: investor._id,
       oldStatus, newStatus: 'REJECTED', user: req.user, reason });
     await logAudit({ entityType: 'Investor', entityId: investor._id, action: 'REJECT',
-      user: req.user, newData: { status: 'REJECTED', reason } });
+      user: req.user, newData: { status: 'REJECTED', reason }, req });
 
     // Notification: KYC Rejected → Maker + Admin
     await createRoleBasedNotifications({
@@ -584,7 +581,8 @@ exports.requestEdit = async (req, res) => {
       oldData, 
       newData,
       changedFields,
-      performedBy: req.user._id
+      performedBy: req.user._id,
+      req
     });
 
     // 7. REAL-TIME SYNC - Emit socket event
@@ -698,7 +696,8 @@ exports.approveEdit = async (req, res) => {
       newData,
       changedFields,
       performedBy: req.user._id,
-      approvedBy: req.user._id
+      approvedBy: req.user._id,
+      req
     });
 
     // 7. REAL-TIME SYNC
@@ -784,7 +783,8 @@ exports.rejectEdit = async (req, res) => {
       changedFields,
       reason,
       performedBy: req.user._id,
-      rejectedBy: req.user._id
+      rejectedBy: req.user._id,
+      req
     });
 
     // 5. REAL-TIME SYNC
@@ -836,7 +836,8 @@ exports.remove = async (req, res) => {
       entityId: investor._id, 
       action: 'DELETE',
       user: req.user, 
-      oldData: investor.toJSON()
+      oldData: investor.toJSON(),
+      req
     });
 
     await Investor.findByIdAndDelete(req.params.id);

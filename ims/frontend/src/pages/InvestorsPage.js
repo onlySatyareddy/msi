@@ -146,22 +146,46 @@ export default function InvestorsPage() {
   useEffect(() => {
     if (!socket) return;
 
-    const handleHoldingsUpdate = () => {
-      console.log('Holdings updated, refreshing investor table');
+    const handleHoldingsUpdate = (data) => {
+      console.log('[Socket] Holdings updated, refreshing investor table:', data?.action);
       loadRef.current();
     };
 
-    const handleInvestorUpdate = () => {
-      console.log('Investor updated, refreshing investor table');
+    const handleInvestorUpdate = (data) => {
+      console.log('[Socket] Investor updated, refreshing investor table:', data?.action);
       loadRef.current();
     };
 
+    const handleSecurityUpdate = (data) => {
+      console.log('[Socket] Security updated, refreshing investor table:', data?.action);
+      loadRef.current();
+    };
+
+    const handleDividendUpdate = (data) => {
+      console.log('[Socket] Dividend updated, refreshing investor table:', data?.action);
+      loadRef.current();
+    };
+
+    const handleTransferUpdate = (data) => {
+      console.log('[Socket] Transfer updated, refreshing investor table:', data?.action);
+      loadRef.current();
+    };
+
+    // Listen to ALL relevant events for data consistency
     socket.on('holdings_update', handleHoldingsUpdate);
+    socket.on('holding_update', handleHoldingsUpdate);
     socket.on('investor_update', handleInvestorUpdate);
+    socket.on('security_update', handleSecurityUpdate);
+    socket.on('dividend_update', handleDividendUpdate);
+    socket.on('transfer_update', handleTransferUpdate);
 
     return () => {
       socket.off('holdings_update', handleHoldingsUpdate);
+      socket.off('holding_update', handleHoldingsUpdate);
       socket.off('investor_update', handleInvestorUpdate);
+      socket.off('security_update', handleSecurityUpdate);
+      socket.off('dividend_update', handleDividendUpdate);
+      socket.off('transfer_update', handleTransferUpdate);
     };
   }, [socket]); // Only re-run when socket changes, not when load changes
 

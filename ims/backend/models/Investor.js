@@ -6,9 +6,18 @@ const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_REGEX = /^[0-9]{10}$/;
 const BANK_ACCOUNT_REGEX = /^\d{9,18}$/;
+const FOLIO_REGEX = /^CFTECH\d{8}$/; // CFTECH00000001 format
 
 const investorSchema = new mongoose.Schema({
-  folioNumber: { type: String, required: true, unique: true, uppercase: true, trim: true },
+  folioNumber: { 
+    type: String, 
+    required: [true, 'Folio number is required'], 
+    unique: true, 
+    uppercase: true, 
+    trim: true,
+    match: [FOLIO_REGEX, 'Invalid folio format. Expected: CFTECH00000001'],
+    immutable: true // 🔒 Cannot be changed after creation
+  },
   fullName:    { type: String, required: true, trim: true, minlength: [2, 'Name must be at least 2 characters'], maxlength: [100, 'Name must not exceed 100 characters'] },
   panNumber:   { type: String, required: true, unique: true, uppercase: true, trim: true,
                  match: [PAN_REGEX, 'Invalid PAN format. Expected: ABCDE1234F'] },
@@ -71,5 +80,7 @@ investorSchema.index({ status: 1 });
 investorSchema.index({ createdBy: 1 });
 investorSchema.index({ panNumber: 1 }, { unique: true });
 investorSchema.index({ email: 1 }, { unique: true, sparse: true }); // Unique but allow null/undefined during initial creation
+investorSchema.index({ folioNumber: 1 }, { unique: true }); // 🔒 Explicit unique index for production safety
 
 module.exports = mongoose.model('Investor', investorSchema);
+module.exports.FOLIO_REGEX = FOLIO_REGEX; // Export for use in validation
